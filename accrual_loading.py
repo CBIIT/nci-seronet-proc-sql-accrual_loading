@@ -8,9 +8,17 @@ import boto3
 import urllib3
 import os
 import datetime
+import numpy as np
 from dateutil.parser import parse
 
+error_msg = list()
+success_msg = list()
+
 def lambda_handler(event, context):
+    global error_msg
+    global success_msg
+    error_msg.clear()
+    success_msg.clear()
     key_list = []
     for record in event['Records']:
         key_list.append(record['s3']['object']['key'])
@@ -101,7 +109,7 @@ def accrual_loader_main(sql_column_df, engine, conn, s3_client, file_key):
 
         acc_participant_data_key = os.path.join(submission, 'Accrual_Participant_Info.csv')
         obj = s3_client.get_object(Bucket=bucket_name, Key= acc_participant_data_key)
-        acc_participant_data = pd.read_csv(obj['Body'])
+        acc_participant_data = pd.read_csv(obj['Body'], na_filter = False)
         print('start uploading data for acc_participant_data')
         acc_participant_data = acc_participant_data.replace("Sunday_Prior_To_Visit_1", "Week_Of_Visit_1")
         acc_participant_data.rename(columns = { "Week_Of_Visit_1": "Sunday_Prior_To_Visit_1"}, inplace = True)
@@ -109,7 +117,7 @@ def accrual_loader_main(sql_column_df, engine, conn, s3_client, file_key):
 
         acc_visit_data_key = os.path.join(submission, 'Accrual_Visit_Info.csv')
         obj = s3_client.get_object(Bucket=bucket_name, Key= acc_visit_data_key)
-        acc_visit_data = pd.read_csv(obj['Body'])
+        acc_visit_data = pd.read_csv(obj['Body'], na_filter = False)
         print('start uploading data for acc_visit_data')
         acc_visit_data.rename(columns={'Collected_in_This_Reporting_Period': 'Collected_In_This_Reporting_Period'}, inplace=True)
         acc_visit_data.replace("Baseline(1)", 1, inplace=True)
@@ -117,7 +125,7 @@ def accrual_loader_main(sql_column_df, engine, conn, s3_client, file_key):
     
         acc_vaccine_data_key = os.path.join(submission, 'Accrual_Vaccination_Status.csv')
         obj = s3_client.get_object(Bucket=bucket_name, Key= acc_vaccine_data_key)
-        acc_vaccine_data = pd.read_csv(obj['Body'])
+        acc_vaccine_data = pd.read_csv(obj['Body'], na_filter = False)
         print('start uploading data for acc_vaccine_data')
         acc_vaccine_data.rename(columns={'Visit_Date_Duration_From_Visit_1': 'SARS-CoV-2_Vaccination_Date_Duration_From_Visit1'}, inplace=True)
         acc_vaccine_data.replace("Baseline(1)", 1, inplace=True)
@@ -128,7 +136,28 @@ def accrual_loader_main(sql_column_df, engine, conn, s3_client, file_key):
 
 def upload_data(data_table, table_name, engine, conn, primary_col):
     sql_df = pd.read_sql(f"Select * FROM {table_name}", conn)
+    sql_type_df = pd.read_sql(f"SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{table_name}'", conn)
     sql_df.fillna("N/A", inplace=True)
+    '''
+    if table_name == "Accrual_Vaccination_Status":
+        s3 = boto3.client('s3')
+        bucket_name = 'seronet-trigger-submissions-passed'
+        key = 'Accrual_Vaccination_Status.csv'
+        csv_buffer = data_table.to_csv(index=False).encode()
+        s3.put_object(Bucket=bucket_name, Key=key, Body=csv_buffer)
+    if table_name == "Accrual_Visit_Info":
+        s3 = boto3.client('s3')
+        bucket_name = 'seronet-trigger-submissions-passed'
+        key = 'Accrual_Visit_Info.csv'
+        csv_buffer = data_table.to_csv(index=False).encode()
+        s3.put_object(Bucket=bucket_name, Key=key, Body=csv_buffer)
+    if table_name == "Accrual_Participant_Info":
+        s3 = boto3.client('s3')
+        bucket_name = 'seronet-trigger-submissions-passed'
+        key = 'Accrual_Participant_Info.csv'
+        csv_buffer = data_table.to_csv(index=False).encode()
+        s3.put_object(Bucket=bucket_name, Key=key, Body=csv_buffer)
+    '''
     for curr_col in sql_df:
         sql_df[curr_col] = [convert_data_type(c) for c in sql_df[curr_col]]
 
@@ -153,9 +182,11 @@ def upload_data(data_table, table_name, engine, conn, primary_col):
         sql_df["PBMC_Concentration"] = sql_df["PBMC_Concentration"].replace("\.0", "", regex=True)
         sql_df["Num_PBMC_Vials_For_FNL"] = sql_df["Num_PBMC_Vials_For_FNL"].replace("\.0", "", regex=True)
     
+    
+    
     data_table_dtypes = data_table.dtypes
     sql_df_dtypes = sql_df.dtypes
-
+    '''
     if table_name == 'Accrual_Participant_Info' and 'Comments' in data_table.keys():
         data_table['Comments'] = data_table['Comments'].astype(sql_df_dtypes['Comments'])
     if table_name == 'Accrual_Visit_Info':
@@ -166,13 +197,20 @@ def upload_data(data_table, table_name, engine, conn, primary_col):
         else:
             for key in data_table.keys():
                 if data_table_dtypes[key] != sql_df_dtypes[key]:
-                    data_table[key] = data_table[key].astype(sql_df_dtypes[key])
+                    #data_table[key] = data_table[key].astype(sql_df_dtypes[key])
                     
+    '''
+    if table_name == 'Accrual_Visit_Info':
+        for key in data_table.keys():
+            if data_table_dtypes[key] != sql_df_dtypes[key]:
+                sql_df[key] = sql_df[key].astype(data_table_dtypes[key])
 
+    primary_keys = ["Research_Participant_ID"] + primary_col
+    data_table = data_table.drop_duplicates(subset=primary_keys, keep="last") # avoid when re-upload the same data, the previous droped values got updated to the DB
     check_data = data_table.merge(sql_df, how="left", indicator="first_pass")
     check_data = check_data.query("first_pass == 'left_only'")
    
-    primary_keys = ["Research_Participant_ID"] + primary_col
+    
     check_data = check_data.merge(sql_df[primary_keys], how="left", on=primary_keys, indicator="second_pass")
     new_data = check_data.query("second_pass == 'left_only'")   # primary keys do not exist
     update_data = check_data.query("second_pass == 'both'")     # primary keys exist but data update
@@ -190,14 +228,21 @@ def upload_data(data_table, table_name, engine, conn, primary_col):
     try:
         if not new_data is None:
             if len(new_data) > 0:
+                for col in new_data.keys():
+                    if sql_type_df.loc[sql_type_df['COLUMN_NAME'] == col, 'DATA_TYPE'].iloc[0] == 'float':
+                        new_data[col] = new_data[col].replace(['N/A'], np.nan)
                 new_data.to_sql(name=table_name, con=engine, if_exists="append", index=False)
                 conn.connection.commit()
-                print(f"there are {len(new_data)} records to be udpated for table {table_name}")
+                print(f"there are {len(new_data)} records to be added for table {table_name}")
     except Exception as e:
         print(e)
     if not update_data is None:
         if len(update_data) > 0:
+            for col in update_data.keys():
+                if sql_type_df.loc[sql_type_df['COLUMN_NAME'] == col, 'DATA_TYPE'].iloc[0] == 'float':
+                    update_data[col] = update_data[col].replace(['N/A'], np.nan)
             update_tables(conn, engine, primary_keys, update_data, table_name)
+            conn.connection.commit()
 
 
 def update_tables(conn, engine, primary_keys, update_table, sql_table):
@@ -215,6 +260,7 @@ def update_tables(conn, engine, primary_keys, update_table, sql_table):
             update_str = ["`" + i + "` = '" + str(j) + "'" for i, j in zip(col_list, curr_data)]
             update_str = ', '.join(update_str)
             sql_query = (f"UPDATE {sql_table} set {update_str} where {key_str %tuple(primary_value)}")
+            print(sql_query)
             engine.execute(sql_query)
         except Exception as e:
             print(e)
