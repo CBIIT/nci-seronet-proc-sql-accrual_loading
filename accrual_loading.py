@@ -32,9 +32,35 @@ def lambda_handler(event, context):
     user_name = ssm.get_parameter(Name="lambda_db_username", WithDecryption=True).get("Parameter").get("Value")
     user_password =ssm.get_parameter(Name="lambda_db_password", WithDecryption=True).get("Parameter").get("Value")
     file_dbname = "seronetdb-Vaccine_Response"
+    bucket_name = 'seronet-trigger-submissions-passed'
+    sub_folder = "Monthly_Accrual_Reports"
     sql_column_df, engine, conn = connect_to_sql_db(host_client, user_name, user_password, file_dbname)
-    accrual_loader_main(sql_column_df, engine, conn, s3_client,file_key)
     
+    all_submissions = []
+    cbc_code = []
+    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "Feinstein_CBC01", 41, all_submissions, cbc_code)
+    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "UMN_CBC02", 27, all_submissions, cbc_code)
+    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "ASU_CBC03", 32, all_submissions, cbc_code)
+    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "Mt_Sinai_CBC04", 14, all_submissions, cbc_code)
+    file_key = os.path.dirname(file_key)
+    all_submissions = [i for i in all_submissions if file_key in i]
+    print(all_submissions)
+
+    accrual_loader_main(all_submissions, sql_column_df, engine, conn, s3_client, file_dbname, bucket_name, sub_folder)
+
+    if len(error_msg) > len(all_submissions):
+        message_slack_fail = ''
+        for error_message in error_msg:
+            message_slack_fail = message_slack_fail + '\n'+ error_message
+        write_to_slack(message_slack_fail, failure)
+    else:
+        message_slack_success = ''
+        for success_message in success_msg:
+            message_slack_success = message_slack_success + '\n'+ success_message
+        write_to_slack(message_slack_success, success)
+
+    print(success_msg)
+    print(error_msg)
     # TODO implement
     return {
         'statusCode': 200,
@@ -43,7 +69,7 @@ def lambda_handler(event, context):
 
 
 def connect_to_sql_db(host_client, user_name, user_password, file_dbname):
-
+    global error_msg
     sql_column_df = pd.DataFrame(columns=["Table_Name", "Column_Name", "Var_Type", "Primary_Key", "Autoincrement",
                                           "Foreign_Key_Table", "Foreign_Key_Column"])
     creds = {'usr': user_name, 'pwd': user_password, 'hst': host_client, "prt": 3306, 'dbn': file_dbname}
@@ -78,63 +104,56 @@ def connect_to_sql_db(host_client, user_name, user_password, file_dbname):
 
                 sql_column_df = pd.concat([sql_column_df, pd.DataFrame.from_records([curr_dict])])
         except Exception as e:
+            error_msg.append(str(e))
             print(e)
     print("## Sucessfully Connected to " + file_dbname + " ##")
     sql_column_df.reset_index(inplace=True, drop=True)
     return sql_column_df, engine, conn
 
 
-def accrual_loader_main(sql_column_df, engine, conn, s3_client, file_key):
-    
-    #sql_column_df, engine, conn = connect_to_sql_db(pd, sd, file_dbname)
-    
-    sub_folder = "Monthly_Accrual_Reports"
-    
+def accrual_loader_main(all_submissions, sql_column_df, engine, conn, s3_client, file_dbname, bucket_name, sub_folder):
+    global success_msg
+    global error_msg
     #get file from bucket and rename columns if necessary
-    bucket_name = 'seronet-trigger-submissions-passed'
-    
-    all_submissions = []
-    cbc_code = []
-    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "Feinstein_CBC01", 41, all_submissions, cbc_code)
-    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "UMN_CBC02", 27, all_submissions, cbc_code)
-    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "ASU_CBC03", 32, all_submissions, cbc_code)
-    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "Mt_Sinai_CBC04", 14, all_submissions, cbc_code)
-    file_key = os.path.dirname(file_key)
-    all_submissions = [i for i in all_submissions if file_key in i]
-    print(all_submissions)
-    
-    #
+
     for submission in all_submissions:
-        print(f'Start transforming {submission}')
+        print(f'Start uploading {submission}')
+        success_msg.append(f'Start uploading {submission}')
+        error_msg.append(f'Start uploading {submission}')
 
         acc_participant_data_key = os.path.join(submission, 'Accrual_Participant_Info.csv')
         obj = s3_client.get_object(Bucket=bucket_name, Key= acc_participant_data_key)
         acc_participant_data = pd.read_csv(obj['Body'], na_filter = False)
         print('start uploading data for acc_participant_data')
+        success_msg.append('start uploading data for acc_participant_data')
         acc_participant_data = acc_participant_data.replace("Sunday_Prior_To_Visit_1", "Week_Of_Visit_1")
         acc_participant_data.rename(columns = { "Week_Of_Visit_1": "Sunday_Prior_To_Visit_1"}, inplace = True)
-        upload_data(acc_participant_data, "Accrual_Participant_Info", engine, conn, [])
-
+        upload_data(acc_participant_data, "Accrual_Participant_Info", engine, conn, [], file_dbname)
+        
         acc_visit_data_key = os.path.join(submission, 'Accrual_Visit_Info.csv')
         obj = s3_client.get_object(Bucket=bucket_name, Key= acc_visit_data_key)
         acc_visit_data = pd.read_csv(obj['Body'], na_filter = False)
         print('start uploading data for acc_visit_data')
+        success_msg.append('start uploading data for acc_visit_data')
         acc_visit_data.rename(columns={'Collected_in_This_Reporting_Period': 'Collected_In_This_Reporting_Period'}, inplace=True)
         acc_visit_data.replace("Baseline(1)", 1, inplace=True)
-        upload_data(acc_visit_data, "Accrual_Visit_Info", engine, conn, ["Visit_Number"])
+        upload_data(acc_visit_data, "Accrual_Visit_Info", engine, conn, ["Visit_Number"], file_dbname)
     
         acc_vaccine_data_key = os.path.join(submission, 'Accrual_Vaccination_Status.csv')
         obj = s3_client.get_object(Bucket=bucket_name, Key= acc_vaccine_data_key)
         acc_vaccine_data = pd.read_csv(obj['Body'], na_filter = False)
         print('start uploading data for acc_vaccine_data')
+        success_msg.append('start uploading data for acc_vaccine_data')
         acc_vaccine_data.rename(columns={'Visit_Date_Duration_From_Visit_1': 'SARS-CoV-2_Vaccination_Date_Duration_From_Visit1'}, inplace=True)
         acc_vaccine_data.replace("Baseline(1)", 1, inplace=True)
-        upload_data(acc_vaccine_data, "Accrual_Vaccination_Status", engine, conn, ["Visit_Number", "Vaccination_Status", "SARS-CoV-2_Vaccine_Type"])
+        upload_data(acc_vaccine_data, "Accrual_Vaccination_Status", engine, conn, ["Visit_Number", "Vaccination_Status", "SARS-CoV-2_Vaccine_Type"], file_dbname)
 
         
         
 
-def upload_data(data_table, table_name, engine, conn, primary_col):
+def upload_data(data_table, table_name, engine, conn, primary_col, file_dbname):
+    global error_msg
+    global success_msg
     sql_df = pd.read_sql(f"Select * FROM {table_name}", conn)
     sql_type_df = pd.read_sql(f"SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{table_name}'", conn)
     sql_df.fillna("N/A", inplace=True)
@@ -234,18 +253,21 @@ def upload_data(data_table, table_name, engine, conn, primary_col):
                 new_data.to_sql(name=table_name, con=engine, if_exists="append", index=False)
                 conn.connection.commit()
                 print(f"there are {len(new_data)} records to be added for table {table_name}")
+                success_msg.append(f"there are {len(new_data)} records to be added for table {table_name}")
     except Exception as e:
+        error_msg.append(str(e))
         print(e)
     if not update_data is None:
         if len(update_data) > 0:
             for col in update_data.keys():
                 if sql_type_df.loc[sql_type_df['COLUMN_NAME'] == col, 'DATA_TYPE'].iloc[0] == 'float':
-                    update_data[col] = update_data[col].replace(['N/A'], np.nan)
-            update_tables(conn, engine, primary_keys, update_data, table_name)
-            conn.connection.commit()
+                    update_data[col] = update_data[col].replace(['N/A'], None)
+            update_tables(conn, engine, primary_keys, update_data, table_name, file_dbname)
 
 
-def update_tables(conn, engine, primary_keys, update_table, sql_table):
+def update_tables(conn, engine, primary_keys, update_table, sql_table, file_dbname):
+    global error_msg
+    global success_msg
     key_str = ['`' + str(s) + '`' + " like '%s'" for s in primary_keys]
     key_str = " and ".join(key_str)
 
@@ -256,16 +278,21 @@ def update_tables(conn, engine, primary_keys, update_table, sql_table):
     for index in update_table.index:
         try:
             curr_data = update_table.loc[index, col_list].values.tolist()
+            for i in range(0, len(curr_data)):
+                if type(curr_data[i]) == np.int64:
+                    curr_data[i] = int(curr_data[i])
             primary_value = update_table.loc[index, primary_keys].values.tolist()
-            update_str = ["`" + i + "` = '" + str(j) + "'" for i, j in zip(col_list, curr_data)]
+            update_str = ["`" + i + "` = %s" for i in col_list]
             update_str = ', '.join(update_str)
-            sql_query = (f"UPDATE {sql_table} set {update_str} where {key_str %tuple(primary_value)}")
-            print(sql_query)
-            engine.execute(sql_query)
+            sql_query = (f"UPDATE `{file_dbname}`.{sql_table} set {update_str} where {key_str %tuple(primary_value)}")
+            curr_data_tuple = tuple(curr_data)
+            conn.execute(sql_query, curr_data_tuple)
         except Exception as e:
+            error_msg.append(str(e))
             print(e)
         finally:
             conn.connection.commit()
+    success_msg.append(f"there are {len(update_table)} records to be udpated for table {sql_table}")
 
 
 def get_all_submissions(s3_client, bucket_name, sub_folder, cbc_name, cbc_id, all_submissions, cbc_code):
