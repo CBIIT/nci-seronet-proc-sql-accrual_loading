@@ -281,6 +281,8 @@ def update_tables(conn, engine, primary_keys, update_table, sql_table, file_dbna
             for i in range(0, len(curr_data)):
                 if type(curr_data[i]) == np.int64:
                     curr_data[i] = int(curr_data[i])
+                elif type(curr_data[i]) == np.float64:
+                    curr_data[i] = float(curr_data[i])
             primary_value = update_table.loc[index, primary_keys].values.tolist()
             update_str = ["`" + i + "` = %s" for i in col_list]
             update_str = ', '.join(update_str)
