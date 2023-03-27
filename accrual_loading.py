@@ -250,7 +250,30 @@ def upload_data(data_table, table_name, engine, conn, primary_col, file_dbname):
                 for col in new_data.keys():
                     if sql_type_df.loc[sql_type_df['COLUMN_NAME'] == col, 'DATA_TYPE'].iloc[0] == 'float':
                         new_data[col] = new_data[col].replace(['N/A'], np.nan)
-                new_data.to_sql(name=table_name, con=engine, if_exists="append", index=False)
+                #new_data.to_sql(name=table_name, con=engine, if_exists="append", index=False)
+                #give up the to_sql method so that the error message would include which specific row of data is going wrong
+                col_list = new_data.columns.tolist()
+                col_string = ''
+                for i in range(0, len(col_list)):
+                    if i == 0:
+                        col_string = '(' + '`' + str(col_list[i]) + '`'
+                    elif i == len(col_list) - 1:
+                        col_string = col_string + ', ' + '`' + str(col_list[i]) + '`' + ')'
+                    else:
+                        col_string = col_string + ', ' + '`' + str(col_list[i]) + '`'
+                for index in new_data.index:
+                    curr_data = new_data.loc[index, col_list].values.tolist()
+                    curr_data = curr_data
+                    for i in range(0, len(curr_data)):
+                        if pd.isna(curr_data[i]):
+                            curr_data[i] = 'NULL'
+                        if isinstance(curr_data[i], datetime.date):
+                            curr_data[i] = curr_data[i].strftime('%Y-%m-%d')
+                    curr_data_tuple = tuple(curr_data)
+                    sql_query = (f"INSERT INTO {table_name} {col_string} VALUES {curr_data_tuple}")
+                    conn.execute(sql_query)
+                
+                
                 conn.connection.commit()
                 print(f"there are {len(new_data)} records to be added for table {table_name}")
                 success_msg.append(f"there are {len(new_data)} records to be added for table {table_name}")
