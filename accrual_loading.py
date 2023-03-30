@@ -32,7 +32,7 @@ def lambda_handler(event, context):
     user_name = ssm.get_parameter(Name="lambda_db_username", WithDecryption=True).get("Parameter").get("Value")
     user_password =ssm.get_parameter(Name="lambda_db_password", WithDecryption=True).get("Parameter").get("Value")
     file_dbname = "seronetdb-Vaccine_Response"
-    bucket_name = 'seronet-trigger-submissions-passed'
+    bucket_name = event['Records'][0]['s3']['bucket']['name']
     sub_folder = "Monthly_Accrual_Reports"
     sql_column_df, engine, conn = connect_to_sql_db(host_client, user_name, user_password, file_dbname)
     
