@@ -45,8 +45,10 @@ def lambda_handler(event, context):
     file_key = os.path.dirname(file_key)
     all_submissions = [i for i in all_submissions if file_key in i]
     print(all_submissions)
+    print(file_key)
 
     accrual_loader_main(all_submissions, sql_column_df, engine, conn, s3_client, file_dbname, bucket_name, sub_folder)
+    delete_data_files(bucket_name, file_key)
 
     if len(error_msg) > len(all_submissions):
         message_slack_fail = ''
@@ -59,8 +61,6 @@ def lambda_handler(event, context):
             message_slack_success = message_slack_success + '\n'+ success_message
         write_to_slack(message_slack_success, success)
 
-    print(success_msg)
-    print(error_msg)
     # TODO implement
     return {
         'statusCode': 200,
@@ -247,6 +247,16 @@ def upload_data(data_table, table_name, engine, conn, primary_col, file_dbname):
     try:
         if not new_data is None:
             if len(new_data) > 0:
+
+                if table_name == 'Accrual_Visit_Info':
+                    csv_buffer = new_data.to_csv(index=False).encode()
+                    s3 = boto3.client('s3')
+                    bucket_name = 'seronet-trigger-submissions-passed'
+                    file_key = 'Accrual_Visit_Info.csv'
+                    s3.put_object(Body=csv_buffer.getvalue(), Bucket=bucket_name, Key=file_key)
+
+                
+                
                 for col in new_data.keys():
                     if sql_type_df.loc[sql_type_df['COLUMN_NAME'] == col, 'DATA_TYPE'].iloc[0] == 'float':
                         new_data[col] = new_data[col].replace(['N/A'], np.nan)
@@ -365,3 +375,13 @@ def write_to_slack(message_slack, slack_chanel):
     http = urllib3.PoolManager()
     data={"text": message_slack}
     r=http.request("POST", slack_chanel, body=json.dumps(data), headers={"Content-Type":"application/json"})
+
+def delete_data_files(bucket_name, file_key):
+    s3_resource = boto3.resource('s3') 
+    bucket = s3_resource.Bucket(bucket_name)
+    subfolders = file_key.split('/')
+    # Get the first three sub folders
+    new_file_key = os.path.join(subfolders[0], subfolders[1], subfolders[2])
+    for obj in bucket.objects.filter(Prefix = new_file_key):
+        s3_resource.Object(bucket.name, obj.key).delete()
+    print(f'{new_file_key} deleted')
