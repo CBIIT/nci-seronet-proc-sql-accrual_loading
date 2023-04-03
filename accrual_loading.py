@@ -34,21 +34,25 @@ def lambda_handler(event, context):
     file_dbname = "seronetdb-Vaccine_Response"
     bucket_name = event['Records'][0]['s3']['bucket']['name']
     sub_folder = "Monthly_Accrual_Reports"
-    sql_column_df, engine, conn = connect_to_sql_db(host_client, user_name, user_password, file_dbname)
+    try:
+        sql_column_df, engine, conn = connect_to_sql_db(host_client, user_name, user_password, file_dbname)
+        
+        all_submissions = []
+        cbc_code = []
+        all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "Feinstein_CBC01", 41, all_submissions, cbc_code)
+        all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "UMN_CBC02", 27, all_submissions, cbc_code)
+        all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "ASU_CBC03", 32, all_submissions, cbc_code)
+        all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "Mt_Sinai_CBC04", 14, all_submissions, cbc_code)
+        file_key = os.path.dirname(file_key)
+        all_submissions = [i for i in all_submissions if file_key in i]
+        print(all_submissions)
     
-    all_submissions = []
-    cbc_code = []
-    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "Feinstein_CBC01", 41, all_submissions, cbc_code)
-    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "UMN_CBC02", 27, all_submissions, cbc_code)
-    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "ASU_CBC03", 32, all_submissions, cbc_code)
-    all_submissions, cbc_code = get_all_submissions(s3_client, bucket_name, sub_folder, "Mt_Sinai_CBC04", 14, all_submissions, cbc_code)
-    file_key = os.path.dirname(file_key)
-    all_submissions = [i for i in all_submissions if file_key in i]
-    print(all_submissions)
-    print(file_key)
-
-    accrual_loader_main(all_submissions, sql_column_df, engine, conn, s3_client, file_dbname, bucket_name, sub_folder)
-    delete_data_files(bucket_name, file_key)
+        accrual_loader_main(all_submissions, sql_column_df, engine, conn, s3_client, file_dbname, bucket_name, sub_folder)
+    except Exception as e:
+        print(e)
+        error_msg.append(str(e))
+    finally:
+        delete_data_files(bucket_name, file_key)
 
     if len(error_msg) > len(all_submissions):
         message_slack_fail = ''
@@ -247,16 +251,6 @@ def upload_data(data_table, table_name, engine, conn, primary_col, file_dbname):
     try:
         if not new_data is None:
             if len(new_data) > 0:
-
-                if table_name == 'Accrual_Visit_Info':
-                    csv_buffer = new_data.to_csv(index=False).encode()
-                    s3 = boto3.client('s3')
-                    bucket_name = 'seronet-trigger-submissions-passed'
-                    file_key = 'Accrual_Visit_Info.csv'
-                    s3.put_object(Body=csv_buffer.getvalue(), Bucket=bucket_name, Key=file_key)
-
-                
-                
                 for col in new_data.keys():
                     if sql_type_df.loc[sql_type_df['COLUMN_NAME'] == col, 'DATA_TYPE'].iloc[0] == 'float':
                         new_data[col] = new_data[col].replace(['N/A'], np.nan)
@@ -276,20 +270,25 @@ def upload_data(data_table, table_name, engine, conn, primary_col, file_dbname):
                     curr_data = curr_data
                     for i in range(0, len(curr_data)):
                         if pd.isna(curr_data[i]):
-                            curr_data[i] = 'NULL'
+                            curr_data[i] = None
                         if isinstance(curr_data[i], datetime.date):
                             curr_data[i] = curr_data[i].strftime('%Y-%m-%d')
+                        if type(curr_data[i]) == np.int64:
+                            curr_data[i] = int(curr_data[i])
+                        if type(curr_data[i]) == np.float64:
+                            curr_data[i] = float(curr_data[i])
                     curr_data_tuple = tuple(curr_data)
-                    sql_query = (f"INSERT INTO {table_name} {col_string} VALUES {curr_data_tuple}")
-                    conn.execute(sql_query)
+                    insert_str = str(tuple(["%s" for i in col_list])).replace("'", "")
+                    sql_query = (f"INSERT INTO {table_name} {col_string} VALUES {insert_str}")
+                    conn.execute(sql_query, curr_data_tuple)
                 
                 
                 conn.connection.commit()
                 print(f"there are {len(new_data)} records to be added for table {table_name}")
                 success_msg.append(f"there are {len(new_data)} records to be added for table {table_name}")
     except Exception as e:
-        error_msg.append(str(e))
         print(e)
+        error_msg.append(str(e))
     if not update_data is None:
         if len(update_data) > 0:
             for col in update_data.keys():
@@ -301,6 +300,7 @@ def upload_data(data_table, table_name, engine, conn, primary_col, file_dbname):
 def update_tables(conn, engine, primary_keys, update_table, sql_table, file_dbname):
     global error_msg
     global success_msg
+
     key_str = ['`' + str(s) + '`' + " like '%s'" for s in primary_keys]
     key_str = " and ".join(key_str)
 
