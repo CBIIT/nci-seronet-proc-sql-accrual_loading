@@ -48,11 +48,13 @@ def lambda_handler(event, context):
         all_submissions = [i for i in all_submissions if file_key in i]
         print(all_submissions)
         accrual_loader_main(all_submissions, sql_column_df, engine, conn, s3_client, file_dbname, bucket_name, sub_folder)
+        TopicArn_make_time_line = ssm.get_parameter(Name="TopicArn_make_time_line", WithDecryption=True).get("Parameter").get("Value")
+        res=sns_publisher("make_time_line",TopicArn_make_time_line)
     except Exception as e:
         display_error_line(e)
         error_msg.append(str(e))
-    finally:
-        delete_data_files(bucket_name, file_key)
+    #finally:
+        #delete_data_files(bucket_name, file_key)
 
     if len(error_msg) > len(all_submissions):
         message_slack_fail = ''
@@ -160,6 +162,7 @@ def upload_data(data_table, table_name, engine, conn, primary_col, file_dbname):
     sql_df = pd.read_sql(f"Select * FROM {table_name}", conn)
     sql_type_df = pd.read_sql(f"SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{table_name}'", conn)
     sql_df.fillna("N/A", inplace=True)
+    
     '''
     if table_name == "Accrual_Vaccination_Status":
         s3 = boto3.client('s3')
@@ -234,8 +237,10 @@ def upload_data(data_table, table_name, engine, conn, primary_col, file_dbname):
     check_data = check_data.query("first_pass == 'left_only'")
 
     check_data = check_data.merge(sql_df[primary_keys], how="left", on=primary_keys, indicator="second_pass")
+   
     new_data = check_data.query("second_pass == 'left_only'")   # primary keys do not exist
     update_data = check_data.query("second_pass == 'both'")     # primary keys exist but data update
+    
 
     if not new_data is None:
         new_data.drop(["first_pass", "second_pass"], axis=1, inplace=True)
@@ -368,3 +373,13 @@ def display_error_line(ex):
                       "lineno": tb.tb_lineno})
         tb = tb.tb_next
     print(str({'type': type(ex).__name__, 'message': str(ex), 'trace': trace}))
+
+
+def sns_publisher(message,TopicArn_make_time_line):
+    try:
+        sns = boto3.client('sns')
+        response = sns.publish(TopicArn=TopicArn_make_time_line, Message=str(message))
+        # return out the response
+        return response
+    except Exception as err:
+        display_error_line(err)
